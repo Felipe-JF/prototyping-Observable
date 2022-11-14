@@ -57,7 +57,26 @@ class Signal<T> {
     });
   }
 
-  static merge() {
+  static merge<T>(...signals: Signal<T>[]) {
+    return new Signal<T>(async (dispatch, complete) => {
+      let counter = signals.length;
+      let completed = false;
+
+      const unsubs = await Promise.all(signals.map((signal) => {
+        return signal.subscribe(dispatch, () => {
+          if (--counter <= 0 && !completed) {
+            complete();
+            completed = true;
+          }
+        });
+      }));
+
+      return () => {
+        unsubs.forEach((unsub) => {
+          unsub();
+        });
+      };
+    });
   }
 }
 
@@ -124,10 +143,6 @@ function Interval(delay = 1000) {
   });
 }
 
-function User() {
-  return Signal.of("Increment");
-}
-
 type TerminalRequest = {
   kind: "Log";
   data: string;
@@ -145,8 +160,19 @@ type TerminalResponse = {
 
 function Terminal(source: Signal<TerminalRequest>) {
   return new Signal<TerminalResponse>(async (dispatch, complete) => {
-    return () => {
-    };
+    return source.subscribe((payload) => {
+      switch (payload.kind) {
+        case "Log": {
+          console.log(payload.data);
+          return;
+        }
+        case "Prompt": {
+          const response = prompt(payload.data) ?? "";
+          dispatch({ kind: "Prompt", id: payload.id, data: response });
+          return;
+        }
+      }
+    }, complete);
   });
 }
 
@@ -183,27 +209,29 @@ function ask(response: Signal<TerminalResponse>) {
   };
 }
 
-const main = Signal.loop(() => {
-  const terminal = Terminal2((response) => {
-    response
-      .filter(byKind("Prompt", "Question"))
-      .map((name): TerminalRequest => ({
-        kind: "Log",
-        data: "Hello " + name.data,
-      }));
+const main = Signal.loop((source: Signal<TerminalResponse>) => {
+  const questionResponse = source
+    .filter(byKind("Prompt", "1"))
+    .map(({ data }): TerminalRequest => ({
+      kind: "Log",
+      data: "Hello " + data,
+    }));
 
-    return Signal.of({
+  const requests = Signal.merge<TerminalRequest>(
+    Signal.of({
       kind: "Prompt",
-      data: "What is your name?",
-      id: "Question",
-    });
-  });
+      id: "1",
+      data: "Qual o seu nome?",
+    }),
+    questionResponse,
+  );
 
-  return terminal;
+  const responses = Terminal(requests);
+
+  return responses;
 });
-
 await main.subscribe((value) => {
-  console.log("Payload", value);
+  // console.log("Payload", value);
 }, () => {
   console.log("Main completed");
 });
